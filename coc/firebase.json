@@ -1,0 +1,1 @@
+{"firestore":{"rules":"firestore.rules","indexes":"firestore.indexes.json"},"flutter":{"platforms":{"dart":{"lib/firebase_options.dart":{"projectId":"compusconnect-6a4b8","configurations":{"web":"1:205235293075:web:2ed77e599da801bee37666"}}}}}}

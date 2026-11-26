@@ -1,0 +1,151 @@
+rules_version = '2';
+
+// CampusConnect security rules.
+// These replace the Spring Security layer of the original backend: with Firebase
+// there is no server in the middle, so the rules below decide who may read/write what.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function userDoc(uid) { return get(/databases/$(database)/documents/users/$(uid)); }
+    function isAdmin() { return signedIn() && userDoc(me()).data.role == 'ADMIN'; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    // Joining / leaving: a signed-in user may only add or remove THEMSELVES in memberIds.
+    function joinsOrLeaves() {
+      return changed().hasOnly(['memberIds']) && (
+        (request.resource.data.memberIds.hasAll(resource.data.memberIds)
+          && request.resource.data.memberIds.hasOnly(resource.data.memberIds.concat([me()])))
+        ||
+        (resource.data.memberIds.hasAll(request.resource.data.memberIds)
+          && resource.data.memberIds.hasOnly(request.resource.data.memberIds.concat([me()])))
+      );
+    }
+
+    // ───────────── Users ─────────────
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow create: if signedIn() && me() == uid
+        && request.resource.data.role == 'USER'
+        && request.resource.data.organizationVerified == false;
+      allow update: if signedIn() && (
+        (me() == uid && !changed().hasAny(['role', 'organizationVerified', 'organizationType', 'organizationName']))
+        || (isAdmin() && changed().hasOnly(['organizationVerified', 'organizationType', 'organizationName']))
+      );
+      allow delete: if false;
+
+      match /likes/{id}     { allow read, write: if signedIn() && me() == uid; }
+      match /saved/{id}     { allow read, write: if signedIn() && me() == uid; }
+      match /following/{id} { allow read, write: if signedIn() && me() == uid; }
+      // The follower writes their own entry in the other person's "followers".
+      match /followers/{id} {
+        allow read: if signedIn() && me() == uid;
+        allow create, update, delete: if signedIn() && me() == id;
+      }
+      match /notifications/{id} {
+        allow read, delete: if signedIn() && me() == uid;
+        allow create: if signedIn()
+          && request.resource.data.fromUid == me()
+          && request.resource.data.keys().hasOnly(['kind', 'body', 'targetId', 'fromUid', 'createdAt', 'readAt']);
+        allow update: if signedIn() && me() == uid && changed().hasOnly(['readAt']);
+      }
+    }
+
+    // ───────────── Posts ─────────────
+    match /posts/{postId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.authorId == me()
+        && request.resource.data.likeCount == 0
+        && request.resource.data.commentCount == 0
+        && request.resource.data.body is string
+        && request.resource.data.body.size() > 0
+        && request.resource.data.body.size() <= 10000;
+      allow update: if signedIn() && (
+        resource.data.authorId == me()                                   // author: soft delete / undo
+        || (changed().hasOnly(['likeCount'])
+            && (request.resource.data.likeCount - resource.data.likeCount) in [-1, 1])
+        || (changed().hasOnly(['commentCount'])
+            && request.resource.data.commentCount == resource.data.commentCount + 1)
+        || isAdmin()                                                     // moderation
+      );
+      allow delete: if false;
+
+      match /comments/{commentId} {
+        allow read: if signedIn();
+        allow create: if signedIn() && request.resource.data.authorId == me()
+          && request.resource.data.body.size() > 0 && request.resource.data.body.size() <= 4000;
+        allow delete: if signedIn() && (resource.data.authorId == me() || isAdmin());
+      }
+    }
+
+    // ───────────── Groups ─────────────
+    match /groups/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.ownerId == me()
+        && request.resource.data.memberIds == [me()];
+      allow update: if signedIn() && (resource.data.ownerId == me() || isAdmin() || joinsOrLeaves());
+      allow delete: if signedIn() && (resource.data.ownerId == me() || isAdmin());
+    }
+
+    // ───────────── Study rooms + shared notes ─────────────
+    match /studyRooms/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.ownerId == me()
+        && me() in request.resource.data.memberIds;
+      allow update: if signedIn() && (resource.data.ownerId == me() || isAdmin() || joinsOrLeaves());
+      allow delete: if signedIn() && (resource.data.ownerId == me() || isAdmin());
+
+      match /notes/{noteId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.authorId == me()
+          && me() in get(/databases/$(database)/documents/studyRooms/$(id)).data.memberIds;
+        allow update, delete: if signedIn() && resource.data.authorId == me();
+      }
+    }
+
+    // ───────────── Direct messages ─────────────
+    match /conversations/{cid} {
+      allow get: if signedIn() && (resource == null || me() in resource.data.participants);
+      allow list: if signedIn() && me() in resource.data.participants;
+      allow create: if signedIn()
+        && me() in request.resource.data.participants
+        && request.resource.data.participants.size() == 2;
+      allow update: if signedIn() && me() in resource.data.participants
+        && changed().hasOnly(['lastMessage', 'lastSenderId', 'updatedAt']);
+
+      match /messages/{mid} {
+        allow read: if signedIn()
+          && me() in get(/databases/$(database)/documents/conversations/$(cid)).data.participants;
+        allow create: if signedIn()
+          && request.resource.data.senderId == me()
+          && me() in get(/databases/$(database)/documents/conversations/$(cid)).data.participants;
+        allow update: if signedIn()
+          && me() in get(/databases/$(database)/documents/conversations/$(cid)).data.participants
+          && resource.data.senderId != me()
+          && changed().hasOnly(['readAt']);
+      }
+    }
+
+    // ───────────── Events (verified organizations only) ─────────────
+    match /events/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.organizationId == me()
+        && userDoc(me()).data.organizationVerified == true;
+      allow update, delete: if signedIn() && (resource.data.organizationId == me() || isAdmin());
+    }
+
+    // ───────────── Moderation reports ─────────────
+    match /reports/{id} {
+      allow create: if signedIn()
+        && request.resource.data.reporterId == me()
+        && request.resource.data.status == 'OPEN';
+      allow read, update: if isAdmin();
+    }
+  }
+}
