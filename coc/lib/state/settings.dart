@@ -18,27 +18,27 @@ class SettingsController extends ChangeNotifier {
     educationOnly = _p!.getBool('educationOnly') ?? false;
   }
 
-  void setThemeMode(ThemeMode m) {
+  Future<void> setThemeMode(ThemeMode m) async {
     themeMode = m;
-    _p?.setString('themeMode', m == ThemeMode.dark ? 'dark' : m == ThemeMode.system ? 'system' : 'light');
+    await _p?.setString('themeMode', m == ThemeMode.dark ? 'dark' : m == ThemeMode.system ? 'system' : 'light');
     notifyListeners();
   }
 
-  void setLargeText(bool v) {
+  Future<void> setLargeText(bool v) async {
     largeText = v;
-    _p?.setBool('largeText', v);
+    await _p?.setBool('largeText', v);
     notifyListeners();
   }
 
-  void setHighContrast(bool v) {
+  Future<void> setHighContrast(bool v) async {
     highContrast = v;
-    _p?.setBool('highContrast', v);
+    await _p?.setBool('highContrast', v);
     notifyListeners();
   }
 
-  void setEducationOnly(bool v) {
+  Future<void> setEducationOnly(bool v) async {
     educationOnly = v;
-    _p?.setBool('educationOnly', v);
+    await _p?.setBool('educationOnly', v);
     notifyListeners();
   }
 }
